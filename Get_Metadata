@@ -3,7 +3,7 @@
 import pymongo, paramiko, os, datetime, re
 
 
-class get_Metadata(object):
+class Get_Metadata(object):
     def __init__(self, *args):
         '''
 
@@ -260,12 +260,12 @@ class get_Metadata(object):
 if __name__ == '__main__':
 
     def start():
-        new_ob = get_Metadata(1, 1, 1, 1, 1, 1)
+        new_ob = Get_Metadata(1, 1, 1, 1, 1, 1)
         new_ob.drop_collection()
         with open('login_information/login_info_prod', 'r') as f:
             for line in f.readlines():
                 line = str(line).split('|')
-                new_ob = get_Metadata(line[0], line[2], line[3], line[4], line[5], line[6])
+                new_ob = Get_Metadata(line[0], line[2], line[3], line[4], line[5], line[6])
                 new_ob.insert_collection()
 
 
