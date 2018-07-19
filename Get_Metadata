@@ -271,6 +271,6 @@ if __name__ == '__main__':
 
     while True:
         nowTime = datetime.datetime.now().strftime('%H%M')
-        if str(nowTime) == str('2300'):  # 每天23点30执行
+        if str(nowTime) == str('2300'):  # 每天23点00执行
             for i in range(1, 10): print(nowTime)
             start()
