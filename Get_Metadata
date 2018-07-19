@@ -1,0 +1,276 @@
+# -*- coding:utf-8 -*-
+# 马辰 2018-07-16
+import pymongo, paramiko, os, datetime, re
+
+
+class get_Metadata(object):
+    def __init__(self, *args):
+        '''
+
+        :param args:  args[0]IP，args[1]系统用户名，args[2]系统密码，args[3]数据库用户名，args[4]数据库密码，args[5]业务名
+                     元数据字典 metadata_dict初始化自带IP和业务名
+        '''
+        self.sys_hostname = args[0]
+        self.sys_username = args[1]
+        self.sys_password = args[2]
+        self.db_username = args[3]
+        self.db_password = args[4]
+        self.bussniss = args[5]
+        self.metadata_dict = {'IP': self.sys_hostname, 'bussniss': self.bussniss}
+
+    def mysql_cmd_str(self, *args):
+        '''
+            不同服务器mysql命令环境变量不同，会有一个各个路径的列表
+        :param args: args[0]：命令行mysql
+        :return: 返回一个列表，列表内容各种mysql路径
+        '''
+        cmd_str = args[0]
+        exec_cmd_list = []
+        try:
+            cmd_str = str(cmd_str).split(',')[1]
+        except:
+            print('命令不正确')
+        whereismysql_list = ['mysql', '/usr/bin/mysql', '/usr/sbin/mysql', '/usr/local/mysql/bin/mysql']
+        for mysql_path in whereismysql_list:
+            exec_cmd = '%s -u%s -p%s -e%s' % (mysql_path, self.db_username, self.db_password, cmd_str,)
+            # print('%s -u%s -p%s -e%s'%  (mysql_path,db_username,db_password,cmd_str,))
+            exec_cmd_list.append(exec_cmd)
+        return exec_cmd_list
+
+    def get_info(self, *args):
+        '''
+                                输入一个linux的命令返回结果
+                            如果命令前半部分为 mysql, 则判断为mysql命令调用mysql_cmd_str()函数
+                            :param args: args[0]  # 变量中传的命令
+        :return: 返回参数所传的命令结果
+        '''
+        exec_cmd_list = []
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(hostname=self.sys_hostname, port=22, username=self.sys_username, password=self.sys_password)
+        cmd_base_str = ('echo %s| sudo -S ' % (self.sys_password))  # 命令通用的前半部分
+        cmd_str = args[0]  # 变量中传的命令
+        exec_cmd_list.append(cmd_str)  # 命令列表加入命令
+        if re.search('mysql', cmd_str):  # 如果是mysql命令 传入 mysql_cmd_str 函数 返回各种路径的mysql命令为一个列表 覆盖之前的exec_cmd_list
+            exec_cmd_list = self.mysql_cmd_str(cmd_str)
+            # print(exec_cmd_list)
+        for exec_cmd in exec_cmd_list:
+            print(exec_cmd)
+            cmd = cmd_base_str + exec_cmd
+            stdin, stdout, stderr = ssh.exec_command(cmd)
+            result_out_info = stdout.read()
+            result_err_info = stderr.read()
+            print('命令返回正常信息:%s' % (result_out_info))
+            print('命令返回错误信息:%s' % (result_err_info))
+            print('命令返回正常信息长度 %s' % (len(str(result_out_info))))
+            if len(str(result_out_info)) == 0:
+                print('命令路径不存在')
+                continue
+            else:
+                print('命令执行完毕')
+                return result_out_info
+
+    def db_base_info(self):
+        '''
+                            调用get_info，通过\s命令，用正则表达式获取数据库版本号和QPS，
+                            并且将结果加入元数据字典 metadata_dict{}
+        '''
+        base_info = self.get_info('mysql,"\s"')
+        recom = re.compile(
+            '.*?(Server version:.*?\)).*?(Queries per second avg:.*?)\n',
+            re.S)
+        # '.*?(Server version:.*?\)).*?(.{7}characterset:.*?)',re.S)
+        base_info = recom.findall(base_info.replace('\t', ''))
+        print(base_info)
+        for the_tuple in base_info:
+            for per_info in the_tuple:
+                name = str(per_info).split(':')[0]
+                content = str(per_info).split(':')[1]
+                self.metadata_dict[name] = content
+        print(self.metadata_dict)
+
+    def db_character_set(self):
+        '''
+                                调用get_info，通过\s命令，用正则表达式获取数据库字符集，
+                                并且将结果加入元数据字典 metadata_dict{}
+        '''
+        char_list = []
+        base_info = self.get_info('mysql,"\s"')
+        recom = re.compile(
+            '.*?(.{7}characterset:.*?)\n.*?(.{7}characterset:.*?)\n.*?(.{7}characterset:.*?)\n.*?(.{7}characterset:.*?)\n',
+            re.S)
+        # '.*?(Server version:.*?\)).*?(.{7}characterset:.*?)',re.S)
+        base_info = recom.findall(base_info.replace('\t', ''))
+        print(base_info)
+        for the_tuple in base_info:
+            for per_info in the_tuple:
+                name = str(per_info).split(':')[0].replace('Conn.', 'Conn')
+                content = str(per_info).split(':')[1].replace('Conn.', 'Conn')
+                char_list.append(name + ':' + content)
+        self.metadata_dict['characterset'] = char_list
+        print(self.metadata_dict)
+
+    def db_buffer_pool(self):
+        '''
+                                 调用get_info，通过show variables like命令，用正则表达式获取buffer pool大小，
+                                 并且将结果加入元数据字典 metadata_dict{}
+        :return:
+        '''
+        base_info = self.get_info('mysql,"show variables like \'innodb_buffer_pool_size\'"')
+        print('buffer_pool_size %s' % base_info)
+        name = 'buffer_pool_size'
+        content = base_info
+        recom = re.compile('.*?innodb_buffer_pool_size.*?(\d+)')
+        content = recom.findall(content.replace('\t', ''))
+        content = int(str(content).replace('[', '').replace(']', '').replace('\'', '')) / 1024 / 1024 / 1024
+        self.metadata_dict[name] = str(content) + 'GB'
+        print(self.metadata_dict)
+
+    def core_number(self):
+        '''
+                                 调用get_info，通过cat /proc/cpuinfo命令，获取物理核数核逻辑核数，
+                                 并且将结果加入元数据字典 metadata_dict{}
+        :return:
+        '''
+        base_info = self.get_info('cat /proc/cpuinfo| grep "physical id"| sort| uniq| wc -l')
+        physical_core = base_info
+        # print('physical_core %s' % (physical_core))
+        base_info = self.get_info('cat /proc/cpuinfo| grep "processor"| wc -l')
+        logic_core = base_info
+        # print('logic_core %s' % (logic_core))
+        self.metadata_dict['physical_core'] = str(physical_core).replace('\n', '')
+        self.metadata_dict['logic_core'] = str(logic_core).replace('\n', '')
+        print(self.metadata_dict)
+
+    def mem_size(self):
+        '''
+                                 调用get_info，通过cat /proc/meminfo命令，获取内存大小，
+                                 并且将结果加入元数据字典 metadata_dict{}
+        :return:
+        '''
+        memory_size = self.get_info('cat /proc/meminfo | grep MemTotal')
+        recom = re.compile('(\d+)')
+        memory_size = recom.findall(memory_size)
+        mem_size = int(str(memory_size).replace('[\'', '').replace('\']', '')) / 1024 / 1024
+        print(mem_size)
+        self.metadata_dict['memory_size'] = str(mem_size) + 'GB'
+
+    def ip_information(self):
+        '''
+                                 调用get_info，通过ip addr |grep inet|grep global |grep -v lo:命令，获取IP信息
+                                 每个IP信息为一个两个元素的元组[0]IP [1]网卡名  ，网卡名中有':'的为虚拟IP VIP
+                                 并且将结果加入元数据字典 metadata_dict{}
+
+        :return:
+        '''
+        ip_information_list = []
+        ipaddr = self.get_info('ip addr |grep inet|grep global |grep -v lo:')
+        ipaddr = str(ipaddr).split('\n')
+        for line in ipaddr:
+            if len(line) == 0:
+                continue
+            recom = re.compile('inet.*?(\d+\.\d+\.\d+\.\d+).*?(eth\d{1}:?\d?)')
+            per_ip_info = recom.findall(line)[0]
+            print(per_ip_info)
+            ip_information_list.append(per_ip_info)
+        self.metadata_dict['ip_information'] = ip_information_list
+        print(self.metadata_dict)
+
+    def my_master(self):
+        '''
+                                 调用get_info，通过mysql,"show slave status\G命令，用正则表达式获取主库信息
+                                 结果为一个三个元素元组 分表示 IP IOthread SQLthread 信息
+                                 并且将结果加入元数据字典 metadata_dict{}
+
+        :return:
+        '''
+        base_info = self.get_info('mysql,"show slave status\G"')
+        print('my_master %s' % base_info)
+        recom = re.compile('.*?(Master_Host:.*?)\n.*?(Slave_IO_Running:.*?)\n.*?(Slave_SQL_Running:.*?)\n', re.S)
+        try:  # 主库没有从库的情况
+            my_master = recom.findall(base_info)
+            print(my_master)
+            self.metadata_dict['my_master'] = my_master
+        except:
+            self.metadata_dict['my_master'] = 'no master'
+        print(self.metadata_dict)
+
+    def my_slave(self):
+        '''
+                                 调用get_info，通过mysql,"show processlist"|grep Binlog命令，用正则表达式获取从库信息
+                                 结果为一个多个元素元组元素个数取决于从库个数
+                                 并且将结果加入元数据字典 metadata_dict{}
+
+        :return:
+        '''
+        my_slave_list = []
+        base_info = self.get_info('mysql,"show processlist"|grep Binlog')
+        print('my_slave %s' % base_info)
+        slave_list = str(base_info).split('\n')
+        recom = re.compile('.*?(\d+\.\d+\.\d+\.\d+).*?')
+        for per_slave in slave_list:
+            if len(per_slave) == 0:
+                continue
+            my_slave = recom.findall(per_slave)
+            try:
+                my_slave_list.append(my_slave[0])
+                self.metadata_dict['my_slave'] = my_slave_list
+            except:
+                my_slave_list.append('no slave')
+                self.metadata_dict['my_slave'] = 'no slave'
+        print(self.metadata_dict['my_slave'])
+
+    def all_meta_data(self):
+        '''
+                                    调用所有获取元数据的方法
+        :return: 返回 metadata_dict{}
+        '''
+        self.db_base_info()
+        self.db_character_set()
+        self.db_buffer_pool()
+        self.core_number()
+        self.mem_size()
+        self.ip_information()
+        self.my_master()
+        self.my_slave()
+        print(self.metadata_dict)
+        return self.metadata_dict
+
+    def insert_collection(self):
+        '''
+                                    插入mongodb一台服务器的相关数据
+        :return:
+        '''
+        myclient = pymongo.MongoClient("mongodb://192.168.5.108:27017/")
+        mydb = myclient['mysql_infor']
+        myclo = mydb['mysql_meta_data']
+        myclo.insert_one(self.all_meta_data())
+
+    def drop_collection(self):
+        '''
+                                删除存放元数据的集合（每次批量插入前执行）
+        :return:
+        '''
+        myclient = pymongo.MongoClient("mongodb://192.168.5.108:27017/")
+        mydb = myclient['mysql_infor']
+        myclo = mydb['mysql_meta_data']
+        myclo.drop()
+
+
+if __name__ == '__main__':
+
+    def start():
+        new_ob = get_Metadata(1, 1, 1, 1, 1, 1)
+        new_ob.drop_collection()
+        with open('login_information/login_info_prod', 'r') as f:
+            for line in f.readlines():
+                line = str(line).split('|')
+                new_ob = get_Metadata(line[0], line[2], line[3], line[4], line[5], line[6])
+                new_ob.insert_collection()
+
+
+    while True:
+        nowTime = datetime.datetime.now().strftime('%H%M')
+        if str(nowTime) == str('2300'):  # 每天23点30执行
+            for i in range(1, 10): print(nowTime)
+            start()
